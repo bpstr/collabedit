@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A backendless, peer-to-peer collaborative text editor." />
+  <meta name="theme-color" content="#0b0d12" />
+  <title>CollabEdit</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="CollabEdit home">
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <span>CollabEdit</span>
+      </a>
+
+      <div class="room-controls">
+        <span class="status" id="connectionStatus" data-state="connecting">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connectionLabel">Connecting…</span>
+        </span>
+        <button class="button secondary" id="newRoomButton" type="button">New room</button>
+        <button class="button primary" id="shareButton" type="button">Copy invite link</button>
+      </div>
+    </header>
+
+    <section class="workspace" aria-label="Collaborative editor">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">Shared session</p>
+          <h1 id="roomTitle">Untitled room</h1>
+          <p class="room-id">Room <code id="roomId"></code></p>
+        </div>
+
+        <div class="identity-card">
+          <label for="displayName">Your name</label>
+          <input id="displayName" maxlength="40" autocomplete="name" />
+        </div>
+
+        <div class="participants-block">
+          <div class="section-heading">
+            <h2>Participants</h2>
+            <span class="count" id="participantCount">1</span>
+          </div>
+          <ul class="participants" id="participants"></ul>
+        </div>
+
+        <div class="privacy-note">
+          <strong>No account. No document server.</strong>
+          <p>The document is synchronized between browsers. Anyone with the link can join this room.</p>
+        </div>
+      </aside>
+
+      <section class="editor-panel">
+        <div class="editor-toolbar">
+          <div class="document-title-wrap">
+            <label class="sr-only" for="documentTitle">Document title</label>
+            <input id="documentTitle" class="document-title" value="Untitled document" maxlength="100" />
+          </div>
+          <div class="document-meta">
+            <span id="saveStatus">Saved locally</span>
+            <span aria-hidden="true">•</span>
+            <span id="characterCount">0 characters</span>
+          </div>
+        </div>
+
+        <label class="sr-only" for="editor">Shared document</label>
+        <textarea
+          id="editor"
+          spellcheck="true"
+          placeholder="Start typing. Share the room link to edit together…"
+          aria-describedby="editorHelp"
+        ></textarea>
+        <p class="sr-only" id="editorHelp">Changes are synchronized in real time with other participants in this room.</p>
+      </section>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
