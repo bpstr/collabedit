@@ -18,13 +18,15 @@ const saveStatus = document.querySelector('#saveStatus');
 const toast = document.querySelector('#toast');
 
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9', '#84cc16'];
+const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+const ROOM_ID_LENGTH = 6;
 const DEFAULT_TEXT = `Welcome to CollabEdit.\n\nShare the invite link with someone and start typing together.\n\nThis document is synchronized directly between participants and cached locally in your browser.`;
 
 const roomId = getOrCreateRoomId();
 roomIdElement.textContent = roomId;
-roomTitle.textContent = `Room ${roomId.slice(0, 6)}`;
+roomTitle.textContent = `Room ${roomId}`;
 
-document.title = `CollabEdit · ${roomId.slice(0, 6)}`;
+document.title = `CollabEdit · ${roomId}`;
 
 const ydoc = new Y.Doc();
 const ytext = ydoc.getText('content');
@@ -215,9 +217,16 @@ function initials(name) {
 }
 
 function getOrCreateRoomId() {
-  const hash = decodeURIComponent(window.location.hash.slice(1)).trim();
-  const validHash = hash.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
-  if (validHash) return validHash;
+  const hash = decodeURIComponent(window.location.hash.slice(1)).trim().toUpperCase();
+  const validHash = Array.from(hash)
+    .filter((character) => ROOM_ALPHABET.includes(character))
+    .slice(0, ROOM_ID_LENGTH)
+    .join('');
+
+  if (validHash.length === ROOM_ID_LENGTH) {
+    if (hash !== validHash) history.replaceState(null, '', roomUrl(validHash));
+    return validHash;
+  }
 
   const id = createRoomId();
   history.replaceState(null, '', roomUrl(id));
@@ -225,9 +234,9 @@ function getOrCreateRoomId() {
 }
 
 function createRoomId() {
-  const bytes = new Uint8Array(18);
+  const bytes = new Uint8Array(ROOM_ID_LENGTH);
   crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(36).padStart(2, '0')).join('');
+  return Array.from(bytes, (byte) => ROOM_ALPHABET[byte % ROOM_ALPHABET.length]).join('');
 }
 
 function roomUrl(id) {
