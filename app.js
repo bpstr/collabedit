@@ -1,0 +1,242 @@
+import * as Y from 'https://esm.sh/yjs@13.6.27';
+import { WebrtcProvider } from 'https://esm.sh/y-webrtc@10.3.0?deps=yjs@13.6.27';
+import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb@9.0.12?deps=yjs@13.6.27';
+
+const editor = document.querySelector('#editor');
+const documentTitle = document.querySelector('#documentTitle');
+const displayName = document.querySelector('#displayName');
+const roomIdElement = document.querySelector('#roomId');
+const roomTitle = document.querySelector('#roomTitle');
+const participantsElement = document.querySelector('#participants');
+const participantCount = document.querySelector('#participantCount');
+const shareButton = document.querySelector('#shareButton');
+const newRoomButton = document.querySelector('#newRoomButton');
+const connectionStatus = document.querySelector('#connectionStatus');
+const connectionLabel = document.querySelector('#connectionLabel');
+const characterCount = document.querySelector('#characterCount');
+const saveStatus = document.querySelector('#saveStatus');
+const toast = document.querySelector('#toast');
+
+const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9', '#84cc16'];
+const DEFAULT_TEXT = `Welcome to CollabEdit.\n\nShare the invite link with someone and start typing together.\n\nThis document is synchronized directly between participants and cached locally in your browser.`;
+
+const roomId = getOrCreateRoomId();
+roomIdElement.textContent = roomId;
+roomTitle.textContent = `Room ${roomId.slice(0, 6)}`;
+
+document.title = `CollabEdit · ${roomId.slice(0, 6)}`;
+
+const ydoc = new Y.Doc();
+const ytext = ydoc.getText('content');
+const ytitle = ydoc.getText('title');
+const persistence = new IndexeddbPersistence(`collabedit:${roomId}`, ydoc);
+const provider = new WebrtcProvider(`collabedit:${roomId}`, ydoc, {
+  password: roomId,
+  maxConns: 30 + Math.floor(Math.random() * 10),
+  filterBcConns: false,
+});
+
+const awareness = provider.awareness;
+const localClientId = awareness.clientID;
+const localIdentity = createIdentity();
+
+displayName.value = localIdentity.name;
+awareness.setLocalStateField('user', localIdentity);
+
+let applyingRemoteText = false;
+let applyingRemoteTitle = false;
+let toastTimer;
+
+persistence.once('synced', () => {
+  if (ytext.length === 0) ytext.insert(0, DEFAULT_TEXT);
+  if (ytitle.length === 0) ytitle.insert(0, 'Untitled document');
+  renderText();
+  renderTitle();
+  saveStatus.textContent = 'Saved locally';
+});
+
+editor.addEventListener('input', () => {
+  if (applyingRemoteText) return;
+
+  const selectionStart = editor.selectionStart;
+  const selectionEnd = editor.selectionEnd;
+  ydoc.transact(() => {
+    ytext.delete(0, ytext.length);
+    ytext.insert(0, editor.value);
+  }, 'textarea');
+  editor.setSelectionRange(selectionStart, selectionEnd);
+  updateCharacterCount();
+  saveStatus.textContent = 'Saving…';
+});
+
+editor.addEventListener('select', broadcastSelection);
+editor.addEventListener('keyup', broadcastSelection);
+editor.addEventListener('click', broadcastSelection);
+
+function broadcastSelection() {
+  awareness.setLocalStateField('cursor', {
+    start: editor.selectionStart,
+    end: editor.selectionEnd,
+  });
+}
+
+ytext.observe((event) => {
+  if (event.transaction.origin === 'textarea') return;
+  renderText();
+});
+
+documentTitle.addEventListener('input', () => {
+  if (applyingRemoteTitle) return;
+  ydoc.transact(() => {
+    ytitle.delete(0, ytitle.length);
+    ytitle.insert(0, documentTitle.value);
+  }, 'title-input');
+});
+
+ytitle.observe((event) => {
+  if (event.transaction.origin === 'title-input') return;
+  renderTitle();
+});
+
+ydoc.on('update', () => {
+  window.clearTimeout(window.__saveTimer);
+  window.__saveTimer = window.setTimeout(() => {
+    saveStatus.textContent = 'Saved locally';
+  }, 350);
+});
+
+displayName.addEventListener('input', () => {
+  const name = displayName.value.trim() || 'Anonymous';
+  localStorage.setItem('collabedit:name', name);
+  awareness.setLocalStateField('user', { ...localIdentity, name });
+});
+
+awareness.on('change', renderParticipants);
+provider.on('status', ({ status }) => {
+  connectionStatus.dataset.state = status === 'connected' ? 'connected' : 'connecting';
+  connectionLabel.textContent = status === 'connected' ? 'Peer network ready' : 'Connecting…';
+});
+
+window.addEventListener('online', updateOnlineStatus);
+window.addEventListener('offline', updateOnlineStatus);
+updateOnlineStatus();
+renderParticipants();
+
+shareButton.addEventListener('click', async () => {
+  const url = roomUrl(roomId);
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Invite link copied');
+  } catch {
+    window.prompt('Copy this invite link:', url);
+  }
+});
+
+newRoomButton.addEventListener('click', () => {
+  window.location.hash = createRoomId();
+  window.location.reload();
+});
+
+function renderText() {
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  applyingRemoteText = true;
+  editor.value = ytext.toString();
+  editor.setSelectionRange(Math.min(start, editor.value.length), Math.min(end, editor.value.length));
+  applyingRemoteText = false;
+  updateCharacterCount();
+}
+
+function renderTitle() {
+  applyingRemoteTitle = true;
+  documentTitle.value = ytitle.toString() || 'Untitled document';
+  applyingRemoteTitle = false;
+}
+
+function renderParticipants() {
+  const states = Array.from(awareness.getStates().entries());
+  states.sort(([a], [b]) => (a === localClientId ? -1 : b === localClientId ? 1 : 0));
+
+  participantsElement.replaceChildren(...states.map(([clientId, state]) => {
+    const user = state.user || { name: 'Anonymous', color: '#64748b' };
+    const item = document.createElement('li');
+    item.className = 'participant';
+
+    const avatar = document.createElement('span');
+    avatar.className = 'avatar';
+    avatar.style.background = user.color;
+    avatar.textContent = initials(user.name);
+
+    const name = document.createElement('span');
+    name.className = 'participant-name';
+    name.textContent = user.name;
+
+    item.append(avatar, name);
+    if (clientId === localClientId) {
+      const you = document.createElement('span');
+      you.className = 'you';
+      you.textContent = '(you)';
+      item.append(you);
+    }
+    return item;
+  }));
+
+  participantCount.textContent = String(states.length);
+}
+
+function updateCharacterCount() {
+  const count = editor.value.length;
+  characterCount.textContent = `${count.toLocaleString()} character${count === 1 ? '' : 's'}`;
+}
+
+function updateOnlineStatus() {
+  if (!navigator.onLine) {
+    connectionStatus.dataset.state = 'offline';
+    connectionLabel.textContent = 'Offline · local editing';
+  }
+}
+
+function createIdentity() {
+  const storedName = localStorage.getItem('collabedit:name');
+  const randomName = `Guest ${Math.floor(100 + Math.random() * 900)}`;
+  return {
+    name: storedName || randomName,
+    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+  };
+}
+
+function initials(name) {
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('') || '?';
+}
+
+function getOrCreateRoomId() {
+  const hash = decodeURIComponent(window.location.hash.slice(1)).trim();
+  const validHash = hash.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
+  if (validHash) return validHash;
+
+  const id = createRoomId();
+  history.replaceState(null, '', roomUrl(id));
+  return id;
+}
+
+function createRoomId() {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(36).padStart(2, '0')).join('');
+}
+
+function roomUrl(id) {
+  return `${window.location.origin}${window.location.pathname}#${encodeURIComponent(id)}`;
+}
+
+function showToast(message) {
+  toast.textContent = message;
+  toast.classList.add('visible');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 1800);
+}
