@@ -20,12 +20,10 @@ const toast = document.querySelector('#toast');
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9', '#84cc16'];
 const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const ROOM_ID_LENGTH = 6;
-const DEFAULT_TEXT = `Welcome to CollabEdit.\n\nShare the invite link with someone and start typing together.\n\nThis document is synchronized directly between participants and cached locally in your browser.`;
 
 const roomId = getOrCreateRoomId();
 roomIdElement.textContent = roomId;
 roomTitle.textContent = `Room ${roomId}`;
-
 document.title = `CollabEdit · ${roomId}`;
 
 const ydoc = new Y.Doc();
@@ -50,25 +48,21 @@ let applyingRemoteTitle = false;
 let toastTimer;
 
 persistence.once('synced', () => {
-  if (ytext.length === 0) ytext.insert(0, DEFAULT_TEXT);
   if (ytitle.length === 0) ytitle.insert(0, 'Untitled document');
-  renderText();
+  editor.value = ytext.toString();
   renderTitle();
+  updateCharacterCount();
   saveStatus.textContent = 'Saved locally';
+  editor.focus();
 });
 
 editor.addEventListener('input', () => {
   if (applyingRemoteText) return;
 
-  const selectionStart = editor.selectionStart;
-  const selectionEnd = editor.selectionEnd;
-  ydoc.transact(() => {
-    ytext.delete(0, ytext.length);
-    ytext.insert(0, editor.value);
-  }, 'textarea');
-  editor.setSelectionRange(selectionStart, selectionEnd);
+  applyMinimalTextChange(ytext.toString(), editor.value);
   updateCharacterCount();
   saveStatus.textContent = 'Saving…';
+  broadcastSelection();
 });
 
 editor.addEventListener('select', broadcastSelection);
@@ -82,18 +76,117 @@ function broadcastSelection() {
   });
 }
 
+function applyMinimalTextChange(previousValue, nextValue) {
+  if (previousValue === nextValue) return;
+
+  let prefixLength = 0;
+  const sharedLength = Math.min(previousValue.length, nextValue.length);
+  while (
+    prefixLength < sharedLength
+    && previousValue.charCodeAt(prefixLength) === nextValue.charCodeAt(prefixLength)
+  ) {
+    prefixLength += 1;
+  }
+
+  let previousSuffix = previousValue.length;
+  let nextSuffix = nextValue.length;
+  while (
+    previousSuffix > prefixLength
+    && nextSuffix > prefixLength
+    && previousValue.charCodeAt(previousSuffix - 1) === nextValue.charCodeAt(nextSuffix - 1)
+  ) {
+    previousSuffix -= 1;
+    nextSuffix -= 1;
+  }
+
+  const deleteLength = previousSuffix - prefixLength;
+  const insertedText = nextValue.slice(prefixLength, nextSuffix);
+
+  ydoc.transact(() => {
+    if (deleteLength > 0) ytext.delete(prefixLength, deleteLength);
+    if (insertedText) ytext.insert(prefixLength, insertedText);
+  }, 'textarea');
+}
+
 ytext.observe((event) => {
   if (event.transaction.origin === 'textarea') return;
-  renderText();
+  applyRemoteDelta(event.delta);
 });
+
+function applyRemoteDelta(delta) {
+  let index = 0;
+  let selectionStart = editor.selectionStart;
+  let selectionEnd = editor.selectionEnd;
+
+  applyingRemoteText = true;
+
+  for (const change of delta) {
+    if (change.retain) {
+      index += change.retain;
+      continue;
+    }
+
+    if (change.delete) {
+      editor.setRangeText('', index, index + change.delete, 'preserve');
+      selectionStart = transformPosition(selectionStart, index, change.delete, 0);
+      selectionEnd = transformPosition(selectionEnd, index, change.delete, 0);
+      continue;
+    }
+
+    if (change.insert) {
+      const insertedText = typeof change.insert === 'string' ? change.insert : '';
+      editor.setRangeText(insertedText, index, index, 'preserve');
+      selectionStart = transformPosition(selectionStart, index, 0, insertedText.length);
+      selectionEnd = transformPosition(selectionEnd, index, 0, insertedText.length);
+      index += insertedText.length;
+    }
+  }
+
+  editor.setSelectionRange(
+    Math.min(selectionStart, editor.value.length),
+    Math.min(selectionEnd, editor.value.length),
+  );
+  applyingRemoteText = false;
+  updateCharacterCount();
+}
+
+function transformPosition(position, changeIndex, deletedLength, insertedLength) {
+  if (position <= changeIndex) return position;
+  if (position <= changeIndex + deletedLength) return changeIndex + insertedLength;
+  return position - deletedLength + insertedLength;
+}
 
 documentTitle.addEventListener('input', () => {
   if (applyingRemoteTitle) return;
-  ydoc.transact(() => {
-    ytitle.delete(0, ytitle.length);
-    ytitle.insert(0, documentTitle.value);
-  }, 'title-input');
+  applyMinimalTitleChange(ytitle.toString(), documentTitle.value);
 });
+
+function applyMinimalTitleChange(previousValue, nextValue) {
+  if (previousValue === nextValue) return;
+
+  let prefixLength = 0;
+  const sharedLength = Math.min(previousValue.length, nextValue.length);
+  while (prefixLength < sharedLength && previousValue[prefixLength] === nextValue[prefixLength]) {
+    prefixLength += 1;
+  }
+
+  let previousSuffix = previousValue.length;
+  let nextSuffix = nextValue.length;
+  while (
+    previousSuffix > prefixLength
+    && nextSuffix > prefixLength
+    && previousValue[previousSuffix - 1] === nextValue[nextSuffix - 1]
+  ) {
+    previousSuffix -= 1;
+    nextSuffix -= 1;
+  }
+
+  ydoc.transact(() => {
+    if (previousSuffix > prefixLength) ytitle.delete(prefixLength, previousSuffix - prefixLength);
+    const insertedText = nextValue.slice(prefixLength, nextSuffix);
+    if (insertedText) ytitle.insert(prefixLength, insertedText);
+  }, 'title-input');
+}
 
 ytitle.observe((event) => {
   if (event.transaction.origin === 'title-input') return;
@@ -138,16 +231,6 @@ newRoomButton.addEventListener('click', () => {
   window.location.hash = createRoomId();
   window.location.reload();
 });
-
-function renderText() {
-  const start = editor.selectionStart;
-  const end = editor.selectionEnd;
-  applyingRemoteText = true;
-  editor.value = ytext.toString();
-  editor.setSelectionRange(Math.min(start, editor.value.length), Math.min(end, editor.value.length));
-  applyingRemoteText = false;
-  updateCharacterCount();
-}
 
 function renderTitle() {
   applyingRemoteTitle = true;
