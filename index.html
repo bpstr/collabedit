@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="description" content="A backendless, peer-to-peer collaborative text editor." />
   <meta name="theme-color" content="#0b0d12" />
   <title>CollabEdit</title>
@@ -22,7 +22,7 @@
           <span id="connectionLabel">Connecting…</span>
         </span>
         <button class="button secondary" id="newRoomButton" type="button">New room</button>
-        <button class="button primary" id="shareButton" type="button">Copy invite link</button>
+        <button class="button primary" id="shareButton" type="button">Copy link</button>
       </div>
     </header>
 
@@ -67,19 +67,13 @@
         </div>
 
         <label class="sr-only" for="editor">Shared document</label>
-        <textarea
-          id="editor"
-          spellcheck="true"
-          placeholder="Start typing. Share the room link to edit together…"
-          aria-describedby="editorHelp"
-        ></textarea>
+        <textarea id="editor" spellcheck="true" aria-describedby="editorHelp"></textarea>
         <p class="sr-only" id="editorHelp">Changes are synchronized in real time with other participants in this room.</p>
       </section>
     </section>
   </main>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-
   <script type="module" src="./app.js"></script>
 </body>
 </html>
