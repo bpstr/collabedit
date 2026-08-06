@@ -303,9 +303,10 @@ function initials(name) {
 }
 
 function getOrCreateRoomId() {
+  const queryRoomId = sanitizeRoomId(new URLSearchParams(window.location.search).get('room') || '');
   const pathRoomId = roomIdFromPath();
   const legacyHashRoomId = sanitizeRoomId(decodeURIComponent(window.location.hash.slice(1)));
-  const roomId = pathRoomId || legacyHashRoomId || createRoomId();
+  const roomId = queryRoomId || pathRoomId || legacyHashRoomId || createRoomId();
   const canonicalUrl = roomUrl(roomId);
 
   if (window.location.href !== canonicalUrl) {
