@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CollabEdit</title>
+  <script>
+    const path = window.location.pathname;
+    const marker = '/collabedit/';
+    const room = path.includes(marker) ? path.slice(path.indexOf(marker) + marker.length).split('/')[0] : '';
+    const target = room ? `${marker}?room=${encodeURIComponent(room)}` : marker;
+    window.location.replace(`${target}${window.location.search ? `&${window.location.search.slice(1)}` : ''}`);
+  </script>
+</head>
+<body></body>
+</html>

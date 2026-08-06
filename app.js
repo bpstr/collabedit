@@ -6,7 +6,6 @@ const editor = document.querySelector('#editor');
 const documentTitle = document.querySelector('#documentTitle');
 const displayName = document.querySelector('#displayName');
 const roomIdElement = document.querySelector('#roomId');
-const roomTitle = document.querySelector('#roomTitle');
 const participantsElement = document.querySelector('#participants');
 const participantCount = document.querySelector('#participantCount');
 const shareButton = document.querySelector('#shareButton');
@@ -20,10 +19,15 @@ const toast = document.querySelector('#toast');
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9', '#84cc16'];
 const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const ROOM_ID_LENGTH = 6;
+const BASE_PATH = '/collabedit';
+const SIGNALING_SERVERS = [
+  'wss://signaling.yjs.dev',
+  'wss://y-webrtc-signaling-eu.herokuapp.com',
+  'wss://y-webrtc-signaling-us.herokuapp.com',
+];
 
 const roomId = getOrCreateRoomId();
 roomIdElement.textContent = roomId;
-roomTitle.textContent = `Room ${roomId}`;
 document.title = `CollabEdit · ${roomId}`;
 
 const ydoc = new Y.Doc();
@@ -31,7 +35,7 @@ const ytext = ydoc.getText('content');
 const ytitle = ydoc.getText('title');
 const persistence = new IndexeddbPersistence(`collabedit:${roomId}`, ydoc);
 const provider = new WebrtcProvider(`collabedit:${roomId}`, ydoc, {
-  password: roomId,
+  signaling: SIGNALING_SERVERS,
   maxConns: 30 + Math.floor(Math.random() * 10),
   filterBcConns: false,
 });
@@ -228,8 +232,7 @@ shareButton.addEventListener('click', async () => {
 });
 
 newRoomButton.addEventListener('click', () => {
-  window.location.hash = createRoomId();
-  window.location.reload();
+  window.location.assign(roomUrl(createRoomId()));
 });
 
 function renderTitle() {
@@ -300,20 +303,36 @@ function initials(name) {
 }
 
 function getOrCreateRoomId() {
-  const hash = decodeURIComponent(window.location.hash.slice(1)).trim().toUpperCase();
-  const validHash = Array.from(hash)
+  const queryRoomId = sanitizeRoomId(new URLSearchParams(window.location.search).get('room') || '');
+  const pathRoomId = roomIdFromPath();
+  const legacyHashRoomId = sanitizeRoomId(decodeURIComponent(window.location.hash.slice(1)));
+  const roomId = queryRoomId || pathRoomId || legacyHashRoomId || createRoomId();
+  const canonicalUrl = roomUrl(roomId);
+
+  if (window.location.href !== canonicalUrl) {
+    history.replaceState(null, '', canonicalUrl);
+  }
+
+  return roomId;
+}
+
+function roomIdFromPath() {
+  const path = window.location.pathname.replace(/\/+$/, '');
+  const baseIndex = path.toLowerCase().lastIndexOf(BASE_PATH);
+  if (baseIndex === -1) return '';
+
+  const suffix = path.slice(baseIndex + BASE_PATH.length).replace(/^\/+/, '');
+  return sanitizeRoomId(decodeURIComponent(suffix.split('/')[0] || ''));
+}
+
+function sanitizeRoomId(value) {
+  const normalized = value.trim().toUpperCase();
+  const valid = Array.from(normalized)
     .filter((character) => ROOM_ALPHABET.includes(character))
     .slice(0, ROOM_ID_LENGTH)
     .join('');
 
-  if (validHash.length === ROOM_ID_LENGTH) {
-    if (hash !== validHash) history.replaceState(null, '', roomUrl(validHash));
-    return validHash;
-  }
-
-  const id = createRoomId();
-  history.replaceState(null, '', roomUrl(id));
-  return id;
+  return valid.length === ROOM_ID_LENGTH ? valid : '';
 }
 
 function createRoomId() {
@@ -323,7 +342,7 @@ function createRoomId() {
 }
 
 function roomUrl(id) {
-  return `${window.location.origin}${window.location.pathname}#${encodeURIComponent(id)}`;
+  return `${window.location.origin}${BASE_PATH}/${encodeURIComponent(id)}`;
 }
 
 function showToast(message) {

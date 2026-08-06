@@ -6,13 +6,13 @@
   <meta name="description" content="A backendless, peer-to-peer collaborative text editor." />
   <meta name="theme-color" content="#0b0d12" />
   <title>CollabEdit</title>
-  <link rel="stylesheet" href="./styles.css" />
-  <link rel="stylesheet" href="./mobile.css" />
+  <link rel="stylesheet" href="/collabedit/styles.css" />
+  <link rel="stylesheet" href="/collabedit/mobile.css" />
 </head>
 <body>
   <main class="app-shell">
     <header class="topbar">
-      <a class="brand" href="./" aria-label="CollabEdit home">
+      <a class="brand" href="/collabedit/" aria-label="CollabEdit home">
         <span class="brand-mark" aria-hidden="true">C</span>
         <span>CollabEdit</span>
       </a>
@@ -31,8 +31,7 @@
       <aside class="sidebar">
         <div>
           <p class="eyebrow">Shared session</p>
-          <h1 id="roomTitle">Untitled room</h1>
-          <p class="room-id">Room <code id="roomId"></code></p>
+          <h1>Room <code id="roomId"></code></h1>
         </div>
 
         <div class="identity-card">
@@ -75,6 +74,6 @@
   </main>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="/collabedit/app.js"></script>
 </body>
 </html>
