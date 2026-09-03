@@ -46,6 +46,19 @@ body {
     gap: 8px;
   }
 
+  .status {
+    display: flex;
+    margin-right: 0;
+    gap: 6px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+  }
+
   .button {
     min-height: 42px;
     padding: 0 13px;

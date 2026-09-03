@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="description" content="A backendless, peer-to-peer collaborative text editor." />
+  <meta name="description" content="A local-first collaborative text editor with real-time Yjs synchronization." />
   <meta name="theme-color" content="#0b0d12" />
   <title>CollabEdit</title>
   <link rel="stylesheet" href="/collabedit/styles.css" />
@@ -18,7 +18,7 @@
       </a>
 
       <div class="room-controls">
-        <span class="status" id="connectionStatus" data-state="connecting">
+        <span class="status" id="connectionStatus" data-state="connecting" role="status" aria-live="polite">
           <span class="status-dot" aria-hidden="true"></span>
           <span id="connectionLabel">Connecting…</span>
         </span>
@@ -48,8 +48,8 @@
         </div>
 
         <div class="privacy-note">
-          <strong>No account. No document server.</strong>
-          <p>The document is synchronized between browsers. Anyone with the link can join this room.</p>
+          <strong>No account. Local-first editing.</strong>
+          <p>Live collaboration is relayed through a Yjs sync service while a local copy stays in your browser.</p>
         </div>
       </aside>
 
