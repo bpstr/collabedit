@@ -1,5 +1,5 @@
 import * as Y from 'https://esm.sh/yjs@13.6.27';
-import { WebrtcProvider } from 'https://esm.sh/y-webrtc@10.3.0?deps=yjs@13.6.27';
+import { WebsocketProvider } from 'https://esm.sh/y-websocket@3.1.0?deps=yjs@13.6.27';
 import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb@9.0.12?deps=yjs@13.6.27';
 
 const editor = document.querySelector('#editor');
@@ -20,11 +20,8 @@ const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9'
 const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const ROOM_ID_LENGTH = 6;
 const BASE_PATH = '/collabedit';
-const SIGNALING_SERVERS = [
-  'wss://signaling.yjs.dev',
-  'wss://y-webrtc-signaling-eu.herokuapp.com',
-  'wss://y-webrtc-signaling-us.herokuapp.com',
-];
+const WEBSOCKET_SERVER = 'wss://demos.yjs.dev/ws';
+const CONNECTION_TIMEOUT_MS = 10000;
 
 const roomId = getOrCreateRoomId();
 roomIdElement.textContent = roomId;
@@ -34,10 +31,8 @@ const ydoc = new Y.Doc();
 const ytext = ydoc.getText('content');
 const ytitle = ydoc.getText('title');
 const persistence = new IndexeddbPersistence(`collabedit:${roomId}`, ydoc);
-const provider = new WebrtcProvider(`collabedit:${roomId}`, ydoc, {
-  signaling: SIGNALING_SERVERS,
-  maxConns: 30 + Math.floor(Math.random() * 10),
-  filterBcConns: false,
+const provider = new WebsocketProvider(WEBSOCKET_SERVER, `collabedit:${roomId}`, ydoc, {
+  connect: true,
 });
 
 const awareness = provider.awareness;
@@ -50,6 +45,11 @@ awareness.setLocalStateField('user', localIdentity);
 let applyingRemoteText = false;
 let applyingRemoteTitle = false;
 let toastTimer;
+let connectionTimer;
+let connectionTimedOut = false;
+let providerConnectionState = 'connecting';
+let providerSynced = false;
+let hasConnected = false;
 
 persistence.once('synced', () => {
   if (ytitle.length === 0) ytitle.insert(0, 'Untitled document');
@@ -210,15 +210,39 @@ displayName.addEventListener('input', () => {
   awareness.setLocalStateField('user', { ...localIdentity, name });
 });
 
-awareness.on('change', renderParticipants);
-provider.on('status', ({ status }) => {
-  connectionStatus.dataset.state = status === 'connected' ? 'connected' : 'connecting';
-  connectionLabel.textContent = status === 'connected' ? 'Peer network ready' : 'Connecting…';
+awareness.on('change', () => {
+  renderParticipants();
+  renderConnectionStatus();
 });
 
-window.addEventListener('online', updateOnlineStatus);
-window.addEventListener('offline', updateOnlineStatus);
-updateOnlineStatus();
+provider.on('status', ({ status }) => {
+  providerConnectionState = status;
+  if (status === 'connected') {
+    hasConnected = true;
+    connectionTimedOut = false;
+    window.clearTimeout(connectionTimer);
+  } else if (navigator.onLine) {
+    scheduleConnectionTimeout();
+  }
+  renderConnectionStatus();
+});
+
+provider.on('sync', (isSynced) => {
+  providerSynced = isSynced;
+  renderConnectionStatus();
+});
+
+window.addEventListener('online', () => {
+  scheduleConnectionTimeout();
+  renderConnectionStatus();
+});
+window.addEventListener('offline', () => {
+  window.clearTimeout(connectionTimer);
+  renderConnectionStatus();
+});
+
+scheduleConnectionTimeout();
+renderConnectionStatus();
 renderParticipants();
 
 shareButton.addEventListener('click', async () => {
@@ -272,16 +296,51 @@ function renderParticipants() {
   participantCount.textContent = String(states.length);
 }
 
-function updateCharacterCount() {
-  const count = editor.value.length;
-  characterCount.textContent = `${count.toLocaleString()} character${count === 1 ? '' : 's'}`;
-}
-
-function updateOnlineStatus() {
+function renderConnectionStatus() {
   if (!navigator.onLine) {
     connectionStatus.dataset.state = 'offline';
     connectionLabel.textContent = 'Offline · local editing';
+    return;
   }
+
+  if (providerConnectionState === 'connected') {
+    connectionStatus.dataset.state = providerSynced ? 'connected' : 'connecting';
+    if (!providerSynced) {
+      connectionLabel.textContent = 'Synchronizing…';
+      return;
+    }
+
+    const onlineCount = awareness.getStates().size;
+    connectionLabel.textContent = onlineCount > 1 ? `Connected · ${onlineCount} online` : 'Connected';
+    return;
+  }
+
+  if (connectionTimedOut) {
+    connectionStatus.dataset.state = 'error';
+    connectionLabel.textContent = 'Sync unavailable';
+    return;
+  }
+
+  connectionStatus.dataset.state = 'connecting';
+  connectionLabel.textContent = hasConnected ? 'Reconnecting…' : 'Connecting…';
+}
+
+function scheduleConnectionTimeout() {
+  window.clearTimeout(connectionTimer);
+  connectionTimedOut = false;
+  if (!navigator.onLine || providerConnectionState === 'connected') return;
+
+  connectionTimer = window.setTimeout(() => {
+    if (navigator.onLine && providerConnectionState !== 'connected') {
+      connectionTimedOut = true;
+      renderConnectionStatus();
+    }
+  }, CONNECTION_TIMEOUT_MS);
+}
+
+function updateCharacterCount() {
+  const count = editor.value.length;
+  characterCount.textContent = `${count.toLocaleString()} character${count === 1 ? '' : 's'}`;
 }
 
 function createIdentity() {
