@@ -1,6 +1,6 @@
 import * as Y from 'https://esm.sh/yjs@13.6.27';
-import { WebrtcProvider } from 'https://esm.sh/y-webrtc@10.2.6?deps=yjs@13.6.27';
 import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb@9.0.12?deps=yjs@13.6.27';
+import { joinRoom, getRelaySockets } from 'https://esm.sh/trystero@0.25.4';
 
 const editor = document.querySelector('#editor');
 const documentTitle = document.querySelector('#documentTitle');
@@ -20,12 +20,10 @@ const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9'
 const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const ROOM_ID_LENGTH = 6;
 const BASE_PATH = '/collabedit';
-const SIGNALING_SERVERS = [
-  'wss://y-webrtc-eu.fly.dev',
-  'wss://y-webrtc-us.fly.dev',
-];
-const SIGNALING_TIMEOUT_MS = 10000;
-const STATUS_POLL_MS = 750;
+const APP_ID = 'bpstr-collabedit-v1';
+const REMOTE_ORIGIN = 'trystero-remote';
+const RELAY_TIMEOUT_MS = 10000;
+const STATUS_POLL_MS = 1000;
 
 const roomId = getOrCreateRoomId();
 roomIdElement.textContent = roomId;
@@ -35,25 +33,78 @@ const ydoc = new Y.Doc();
 const ytext = ydoc.getText('content');
 const ytitle = ydoc.getText('title');
 const persistence = new IndexeddbPersistence(`collabedit:${roomId}`, ydoc);
-const provider = new WebrtcProvider(`collabedit:${roomId}`, ydoc, {
-  signaling: SIGNALING_SERVERS,
-  password: roomId,
-  maxConns: 30 + Math.floor(Math.random() * 10),
-  filterBcConns: false,
-});
 
-const awareness = provider.awareness;
-const localClientId = awareness.clientID;
-const localIdentity = createIdentity();
-
-displayName.value = localIdentity.name;
-awareness.setLocalStateField('user', localIdentity);
-
+const remotePeers = new Map();
 let applyingRemoteText = false;
 let applyingRemoteTitle = false;
 let toastTimer;
-let signalingTimer;
-let signalingTimedOut = false;
+let relayTimer;
+let relayTimedOut = false;
+let lastJoinError = '';
+
+const localIdentity = createIdentity();
+displayName.value = localIdentity.name;
+
+const room = joinRoom(
+  {
+    appId: APP_ID,
+    relayConfig: {
+      redundancy: 5,
+    },
+  },
+  `collabedit:${roomId}`,
+  {
+    onJoinError: ({ error }) => {
+      lastJoinError = error?.message || String(error || 'Peer connection failed');
+      renderConnectionStatus();
+    },
+  },
+);
+
+const updateAction = room.makeAction('y-update');
+const presenceAction = room.makeAction('presence');
+const cursorAction = room.makeAction('cursor');
+
+updateAction.onMessage = (data) => {
+  const update = toUint8Array(data);
+  if (update.byteLength === 0) return;
+  Y.applyUpdate(ydoc, update, REMOTE_ORIGIN);
+};
+
+presenceAction.onMessage = (identity, { peerId }) => {
+  const existing = remotePeers.get(peerId) || {};
+  remotePeers.set(peerId, {
+    ...existing,
+    name: typeof identity?.name === 'string' ? identity.name : 'Anonymous',
+    color: typeof identity?.color === 'string' ? identity.color : '#64748b',
+  });
+  renderParticipants();
+};
+
+cursorAction.onMessage = (cursor, { peerId }) => {
+  const existing = remotePeers.get(peerId) || { name: 'Anonymous', color: '#64748b' };
+  remotePeers.set(peerId, { ...existing, cursor });
+};
+
+room.onPeerJoin = (peerId) => {
+  remotePeers.set(peerId, remotePeers.get(peerId) || { name: 'Connecting peer…', color: '#64748b' });
+  relayTimedOut = false;
+  lastJoinError = '';
+  window.clearTimeout(relayTimer);
+
+  updateAction.send(Y.encodeStateAsUpdate(ydoc), { target: peerId }).catch(() => {});
+  presenceAction.send(localIdentity, { target: peerId }).catch(() => {});
+  broadcastSelection(peerId);
+
+  renderParticipants();
+  renderConnectionStatus();
+};
+
+room.onPeerLeave = (peerId) => {
+  remotePeers.delete(peerId);
+  renderParticipants();
+  renderConnectionStatus();
+};
 
 persistence.once('synced', () => {
   if (ytitle.length === 0) ytitle.insert(0, 'Untitled document');
@@ -73,15 +124,17 @@ editor.addEventListener('input', () => {
   broadcastSelection();
 });
 
-editor.addEventListener('select', broadcastSelection);
-editor.addEventListener('keyup', broadcastSelection);
-editor.addEventListener('click', broadcastSelection);
+editor.addEventListener('select', () => broadcastSelection());
+editor.addEventListener('keyup', () => broadcastSelection());
+editor.addEventListener('click', () => broadcastSelection());
 
-function broadcastSelection() {
-  awareness.setLocalStateField('cursor', {
+function broadcastSelection(target = null) {
+  const cursor = {
     start: editor.selectionStart,
     end: editor.selectionEnd,
-  });
+  };
+  const options = target ? { target } : undefined;
+  cursorAction.send(cursor, options).catch(() => {});
 }
 
 function applyMinimalTextChange(previousValue, nextValue) {
@@ -201,47 +254,48 @@ ytitle.observe((event) => {
   renderTitle();
 });
 
-ydoc.on('update', () => {
+ydoc.on('update', (update, origin) => {
   window.clearTimeout(window.__saveTimer);
   window.__saveTimer = window.setTimeout(() => {
     saveStatus.textContent = 'Saved locally';
   }, 350);
+
+  if (origin !== REMOTE_ORIGIN && peerCount() > 0) {
+    updateAction.send(update).catch(() => {});
+  }
 });
 
 displayName.addEventListener('input', () => {
   const name = displayName.value.trim() || 'Anonymous';
   localStorage.setItem('collabedit:name', name);
-  awareness.setLocalStateField('user', { ...localIdentity, name });
-});
-
-awareness.on('change', () => {
+  localIdentity.name = name;
+  presenceAction.send(localIdentity).catch(() => {});
   renderParticipants();
-  renderConnectionStatus();
-});
-
-provider.on('peers', () => {
-  renderConnectionStatus();
-});
-
-provider.on('synced', () => {
-  renderConnectionStatus();
 });
 
 window.addEventListener('online', () => {
-  scheduleSignalingTimeout();
-  renderConnectionStatus();
-});
-window.addEventListener('offline', () => {
-  window.clearTimeout(signalingTimer);
+  scheduleRelayTimeout();
   renderConnectionStatus();
 });
 
-scheduleSignalingTimeout();
+window.addEventListener('offline', () => {
+  window.clearTimeout(relayTimer);
+  renderConnectionStatus();
+});
+
+window.addEventListener('pagehide', () => {
+  window.clearTimeout(relayTimer);
+  window.clearInterval(statusPoll);
+  room.leave();
+}, { once: true });
+
+scheduleRelayTimeout();
 renderConnectionStatus();
 renderParticipants();
 
-const statusPoll = window.setInterval(renderConnectionStatus, STATUS_POLL_MS);
-window.addEventListener('pagehide', () => window.clearInterval(statusPoll), { once: true });
+const statusPoll = window.setInterval(() => {
+  renderConnectionStatus();
+}, STATUS_POLL_MS);
 
 shareButton.addEventListener('click', async () => {
   const url = roomUrl(roomId);
@@ -264,25 +318,26 @@ function renderTitle() {
 }
 
 function renderParticipants() {
-  const states = Array.from(awareness.getStates().entries());
-  states.sort(([a], [b]) => (a === localClientId ? -1 : b === localClientId ? 1 : 0));
+  const peers = [
+    { id: 'local', ...localIdentity, local: true },
+    ...Array.from(remotePeers.entries()).map(([id, peer]) => ({ id, ...peer, local: false })),
+  ];
 
-  participantsElement.replaceChildren(...states.map(([clientId, state]) => {
-    const user = state.user || { name: 'Anonymous', color: '#64748b' };
+  participantsElement.replaceChildren(...peers.map((peer) => {
     const item = document.createElement('li');
     item.className = 'participant';
 
     const avatar = document.createElement('span');
-    avatar.style.background = user.color;
     avatar.className = 'avatar';
-    avatar.textContent = initials(user.name);
+    avatar.style.background = peer.color || '#64748b';
+    avatar.textContent = initials(peer.name || 'Anonymous');
 
     const name = document.createElement('span');
     name.className = 'participant-name';
-    name.textContent = user.name;
+    name.textContent = peer.name || 'Anonymous';
 
     item.append(avatar, name);
-    if (clientId === localClientId) {
+    if (peer.local) {
       const you = document.createElement('span');
       you.className = 'you';
       you.textContent = '(you)';
@@ -291,7 +346,7 @@ function renderParticipants() {
     return item;
   }));
 
-  participantCount.textContent = String(states.length);
+  participantCount.textContent = String(1 + peerCount());
 }
 
 function renderConnectionStatus() {
@@ -301,67 +356,64 @@ function renderConnectionStatus() {
     return;
   }
 
-  const webRtcPeerCount = connectedWebRtcPeerCount();
-  const localPeerCount = broadcastChannelPeerCount();
-  const remoteAwarenessCount = Math.max(0, awareness.getStates().size - 1);
-  const hasPeer = webRtcPeerCount > 0 || localPeerCount > 0 || remoteAwarenessCount > 0;
-
-  if (hasPeer) {
-    signalingTimedOut = false;
-    window.clearTimeout(signalingTimer);
-    const onlineCount = Math.max(
-      awareness.getStates().size,
-      1 + webRtcPeerCount,
-      1 + localPeerCount,
-    );
+  const peers = peerCount();
+  if (peers > 0) {
+    relayTimedOut = false;
+    lastJoinError = '';
+    window.clearTimeout(relayTimer);
     connectionStatus.dataset.state = 'connected';
-    connectionLabel.textContent = `Connected · ${onlineCount} online`;
+    connectionLabel.textContent = `Connected · ${peers + 1} online`;
     return;
   }
 
-  if (signalingConnected()) {
-    signalingTimedOut = false;
-    window.clearTimeout(signalingTimer);
-    connectionStatus.dataset.state = 'ready';
-    connectionLabel.textContent = 'P2P ready · waiting for peer';
-    return;
-  }
-
-  if (signalingTimedOut) {
+  if (lastJoinError) {
     connectionStatus.dataset.state = 'error';
-    connectionLabel.textContent = 'Signaling unavailable';
+    connectionLabel.textContent = 'P2P connection failed';
+    return;
+  }
+
+  const relayCount = connectedRelayCount();
+  if (relayCount > 0) {
+    relayTimedOut = false;
+    window.clearTimeout(relayTimer);
+    connectionStatus.dataset.state = 'ready';
+    connectionLabel.textContent = 'Waiting for peer';
+    return;
+  }
+
+  if (relayTimedOut) {
+    connectionStatus.dataset.state = 'error';
+    connectionLabel.textContent = 'Discovery unavailable';
     return;
   }
 
   connectionStatus.dataset.state = 'connecting';
-  connectionLabel.textContent = provider.connected ? 'Finding peers…' : 'Connecting…';
+  connectionLabel.textContent = 'Finding peers…';
 }
 
-function connectedWebRtcPeerCount() {
-  const connections = provider.room?.webrtcConns;
-  if (!connections) return 0;
-  return Array.from(connections.values()).filter((connection) => connection.connected && !connection.closed).length;
+function peerCount() {
+  return Object.keys(room.getPeers()).length;
 }
 
-function broadcastChannelPeerCount() {
-  return provider.room?.bcConns?.size || 0;
+function connectedRelayCount() {
+  try {
+    return Object.values(getRelaySockets()).filter((socket) => socket?.readyState === WebSocket.OPEN).length;
+  } catch {
+    return 0;
+  }
 }
 
-function signalingConnected() {
-  return provider.signalingConns?.some((connection) => connection.connected) || false;
-}
+function scheduleRelayTimeout() {
+  window.clearTimeout(relayTimer);
+  relayTimedOut = false;
+  if (!navigator.onLine || connectedRelayCount() > 0 || peerCount() > 0) return;
 
-function scheduleSignalingTimeout() {
-  window.clearTimeout(signalingTimer);
-  signalingTimedOut = false;
-  if (!navigator.onLine || signalingConnected()) return;
-
-  signalingTimer = window.setTimeout(() => {
-    if (navigator.onLine && !signalingConnected() && connectedWebRtcPeerCount() === 0) {
-      signalingTimedOut = true;
+  relayTimer = window.setTimeout(() => {
+    if (navigator.onLine && connectedRelayCount() === 0 && peerCount() === 0) {
+      relayTimedOut = true;
       renderConnectionStatus();
     }
-  }, SIGNALING_TIMEOUT_MS);
+  }, RELAY_TIMEOUT_MS);
 }
 
 function updateCharacterCount() {
@@ -387,18 +439,25 @@ function initials(name) {
     .join('') || '?';
 }
 
+function toUint8Array(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return new Uint8Array();
+}
+
 function getOrCreateRoomId() {
   const queryRoomId = sanitizeRoomId(new URLSearchParams(window.location.search).get('room') || '');
   const pathRoomId = roomIdFromPath();
   const legacyHashRoomId = sanitizeRoomId(decodeURIComponent(window.location.hash.slice(1)));
-  const roomId = queryRoomId || pathRoomId || legacyHashRoomId || createRoomId();
-  const canonicalUrl = roomUrl(roomId);
+  const id = queryRoomId || pathRoomId || legacyHashRoomId || createRoomId();
+  const canonicalUrl = roomUrl(id);
 
   if (window.location.href !== canonicalUrl) {
     history.replaceState(null, '', canonicalUrl);
   }
 
-  return roomId;
+  return id;
 }
 
 function roomIdFromPath() {
