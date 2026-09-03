@@ -1,5 +1,5 @@
 import * as Y from 'https://esm.sh/yjs@13.6.27';
-import { WebrtcProvider } from 'https://esm.sh/y-webrtc@10.3.0?deps=yjs@13.6.27';
+import { WebrtcProvider } from 'https://esm.sh/y-webrtc@10.2.6?deps=yjs@13.6.27';
 import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb@9.0.12?deps=yjs@13.6.27';
 
 const editor = document.querySelector('#editor');
@@ -54,7 +54,6 @@ let applyingRemoteTitle = false;
 let toastTimer;
 let signalingTimer;
 let signalingTimedOut = false;
-let providerActive = false;
 
 persistence.once('synced', () => {
   if (ytitle.length === 0) ytitle.insert(0, 'Untitled document');
@@ -220,16 +219,6 @@ awareness.on('change', () => {
   renderConnectionStatus();
 });
 
-provider.on('status', ({ connected }) => {
-  providerActive = Boolean(connected);
-  if (providerActive && navigator.onLine) {
-    scheduleSignalingTimeout();
-  } else {
-    window.clearTimeout(signalingTimer);
-  }
-  renderConnectionStatus();
-});
-
 provider.on('peers', () => {
   renderConnectionStatus();
 });
@@ -345,7 +334,7 @@ function renderConnectionStatus() {
   }
 
   connectionStatus.dataset.state = 'connecting';
-  connectionLabel.textContent = providerActive ? 'Finding peers…' : 'Connecting…';
+  connectionLabel.textContent = provider.connected ? 'Finding peers…' : 'Connecting…';
 }
 
 function connectedWebRtcPeerCount() {
