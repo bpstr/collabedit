@@ -1,5 +1,5 @@
 import * as Y from 'https://esm.sh/yjs@13.6.27';
-import { WebsocketProvider } from 'https://esm.sh/y-websocket@3.1.0?deps=yjs@13.6.27';
+import { WebrtcProvider } from 'https://esm.sh/y-webrtc@10.3.0?deps=yjs@13.6.27';
 import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb@9.0.12?deps=yjs@13.6.27';
 
 const editor = document.querySelector('#editor');
@@ -20,8 +20,12 @@ const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#0ea5e9'
 const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const ROOM_ID_LENGTH = 6;
 const BASE_PATH = '/collabedit';
-const WEBSOCKET_SERVER = 'wss://demos.yjs.dev/ws';
-const CONNECTION_TIMEOUT_MS = 10000;
+const SIGNALING_SERVERS = [
+  'wss://y-webrtc-eu.fly.dev',
+  'wss://y-webrtc-us.fly.dev',
+];
+const SIGNALING_TIMEOUT_MS = 10000;
+const STATUS_POLL_MS = 750;
 
 const roomId = getOrCreateRoomId();
 roomIdElement.textContent = roomId;
@@ -31,8 +35,11 @@ const ydoc = new Y.Doc();
 const ytext = ydoc.getText('content');
 const ytitle = ydoc.getText('title');
 const persistence = new IndexeddbPersistence(`collabedit:${roomId}`, ydoc);
-const provider = new WebsocketProvider(WEBSOCKET_SERVER, `collabedit:${roomId}`, ydoc, {
-  connect: true,
+const provider = new WebrtcProvider(`collabedit:${roomId}`, ydoc, {
+  signaling: SIGNALING_SERVERS,
+  password: roomId,
+  maxConns: 30 + Math.floor(Math.random() * 10),
+  filterBcConns: false,
 });
 
 const awareness = provider.awareness;
@@ -45,11 +52,9 @@ awareness.setLocalStateField('user', localIdentity);
 let applyingRemoteText = false;
 let applyingRemoteTitle = false;
 let toastTimer;
-let connectionTimer;
-let connectionTimedOut = false;
-let providerConnectionState = 'connecting';
-let providerSynced = false;
-let hasConnected = false;
+let signalingTimer;
+let signalingTimedOut = false;
+let providerActive = false;
 
 persistence.once('synced', () => {
   if (ytitle.length === 0) ytitle.insert(0, 'Untitled document');
@@ -215,35 +220,39 @@ awareness.on('change', () => {
   renderConnectionStatus();
 });
 
-provider.on('status', ({ status }) => {
-  providerConnectionState = status;
-  if (status === 'connected') {
-    hasConnected = true;
-    connectionTimedOut = false;
-    window.clearTimeout(connectionTimer);
-  } else if (navigator.onLine) {
-    scheduleConnectionTimeout();
+provider.on('status', ({ connected }) => {
+  providerActive = Boolean(connected);
+  if (providerActive && navigator.onLine) {
+    scheduleSignalingTimeout();
+  } else {
+    window.clearTimeout(signalingTimer);
   }
   renderConnectionStatus();
 });
 
-provider.on('sync', (isSynced) => {
-  providerSynced = isSynced;
+provider.on('peers', () => {
+  renderConnectionStatus();
+});
+
+provider.on('synced', () => {
   renderConnectionStatus();
 });
 
 window.addEventListener('online', () => {
-  scheduleConnectionTimeout();
+  scheduleSignalingTimeout();
   renderConnectionStatus();
 });
 window.addEventListener('offline', () => {
-  window.clearTimeout(connectionTimer);
+  window.clearTimeout(signalingTimer);
   renderConnectionStatus();
 });
 
-scheduleConnectionTimeout();
+scheduleSignalingTimeout();
 renderConnectionStatus();
 renderParticipants();
+
+const statusPoll = window.setInterval(renderConnectionStatus, STATUS_POLL_MS);
+window.addEventListener('pagehide', () => window.clearInterval(statusPoll), { once: true });
 
 shareButton.addEventListener('click', async () => {
   const url = roomUrl(roomId);
@@ -275,8 +284,8 @@ function renderParticipants() {
     item.className = 'participant';
 
     const avatar = document.createElement('span');
-    avatar.className = 'avatar';
     avatar.style.background = user.color;
+    avatar.className = 'avatar';
     avatar.textContent = initials(user.name);
 
     const name = document.createElement('span');
@@ -303,39 +312,67 @@ function renderConnectionStatus() {
     return;
   }
 
-  if (providerConnectionState === 'connected') {
-    connectionStatus.dataset.state = providerSynced ? 'connected' : 'connecting';
-    if (!providerSynced) {
-      connectionLabel.textContent = 'Synchronizing…';
-      return;
-    }
+  const webRtcPeerCount = connectedWebRtcPeerCount();
+  const localPeerCount = broadcastChannelPeerCount();
+  const remoteAwarenessCount = Math.max(0, awareness.getStates().size - 1);
+  const hasPeer = webRtcPeerCount > 0 || localPeerCount > 0 || remoteAwarenessCount > 0;
 
-    const onlineCount = awareness.getStates().size;
-    connectionLabel.textContent = onlineCount > 1 ? `Connected · ${onlineCount} online` : 'Connected';
+  if (hasPeer) {
+    signalingTimedOut = false;
+    window.clearTimeout(signalingTimer);
+    const onlineCount = Math.max(
+      awareness.getStates().size,
+      1 + webRtcPeerCount,
+      1 + localPeerCount,
+    );
+    connectionStatus.dataset.state = 'connected';
+    connectionLabel.textContent = `Connected · ${onlineCount} online`;
     return;
   }
 
-  if (connectionTimedOut) {
+  if (signalingConnected()) {
+    signalingTimedOut = false;
+    window.clearTimeout(signalingTimer);
+    connectionStatus.dataset.state = 'ready';
+    connectionLabel.textContent = 'P2P ready · waiting for peer';
+    return;
+  }
+
+  if (signalingTimedOut) {
     connectionStatus.dataset.state = 'error';
-    connectionLabel.textContent = 'Sync unavailable';
+    connectionLabel.textContent = 'Signaling unavailable';
     return;
   }
 
   connectionStatus.dataset.state = 'connecting';
-  connectionLabel.textContent = hasConnected ? 'Reconnecting…' : 'Connecting…';
+  connectionLabel.textContent = providerActive ? 'Finding peers…' : 'Connecting…';
 }
 
-function scheduleConnectionTimeout() {
-  window.clearTimeout(connectionTimer);
-  connectionTimedOut = false;
-  if (!navigator.onLine || providerConnectionState === 'connected') return;
+function connectedWebRtcPeerCount() {
+  const connections = provider.room?.webrtcConns;
+  if (!connections) return 0;
+  return Array.from(connections.values()).filter((connection) => connection.connected && !connection.closed).length;
+}
 
-  connectionTimer = window.setTimeout(() => {
-    if (navigator.onLine && providerConnectionState !== 'connected') {
-      connectionTimedOut = true;
+function broadcastChannelPeerCount() {
+  return provider.room?.bcConns?.size || 0;
+}
+
+function signalingConnected() {
+  return provider.signalingConns?.some((connection) => connection.connected) || false;
+}
+
+function scheduleSignalingTimeout() {
+  window.clearTimeout(signalingTimer);
+  signalingTimedOut = false;
+  if (!navigator.onLine || signalingConnected()) return;
+
+  signalingTimer = window.setTimeout(() => {
+    if (navigator.onLine && !signalingConnected() && connectedWebRtcPeerCount() === 0) {
+      signalingTimedOut = true;
       renderConnectionStatus();
     }
-  }, CONNECTION_TIMEOUT_MS);
+  }, SIGNALING_TIMEOUT_MS);
 }
 
 function updateCharacterCount() {
