@@ -1,24 +1,34 @@
 # CollabEdit
 
-A local-first collaborative text editor designed to run directly from GitHub Pages.
+A backendless, local-first collaborative text editor designed to run directly from GitHub Pages.
 
 ## Features
 
 - Shareable rooms encoded in the URL path
-- Real-time synchronization through Yjs WebSocket transport
+- Direct browser-to-browser synchronization over WebRTC
 - Shared state powered by Yjs
 - Local browser persistence through IndexedDB
 - Participant presence and editable display names
-- No accounts or application database
+- No accounts, application server, or document database
 - Responsive desktop and mobile interface with visible connection state
 
 ## How it works
 
-GitHub Pages serves the static HTML, CSS, and JavaScript. Each room has a stable path such as `/collabedit/HK9YGF`. The client creates a Yjs document for that room, retains a local copy in IndexedDB, and synchronizes live updates through `y-websocket`.
+GitHub Pages serves the static HTML, CSS, and JavaScript. Each room has a stable path such as `/collabedit/HK9YGF`. The client creates a Yjs document for that room and retains a local copy in IndexedDB.
 
-The hosted demo currently uses the public Yjs WebSocket demo endpoint at `wss://demos.yjs.dev/ws`. This avoids the unreliable public `y-webrtc` signaling path that could leave rooms stuck at `Connecting…`, but the public demo endpoint is not intended as production infrastructure. Replace `WEBSOCKET_SERVER` in `app.js` with a controlled Yjs-compatible WebSocket service for production use.
+Live collaboration uses `y-webrtc`. Public signaling servers are contacted only so two browsers can exchange WebRTC offers, answers, and ICE candidates and discover each other. Once the connection is established, document updates are exchanged directly between the browsers; the signaling servers are not document storage and are not in the document data path.
 
-The connection indicator distinguishes connecting, synchronizing, connected, reconnecting, offline, and unavailable states. Participant presence continues to use Yjs awareness.
+The room ID is also used as the `y-webrtc` password so signaling messages are encrypted for that room. The prototype currently uses the public Fly.io Yjs signaling endpoints in Europe and the US for redundancy.
+
+The connection indicator is deliberately peer-aware:
+
+- **Connecting / Finding peers** — the WebRTC provider is starting and looking for signaling connectivity.
+- **P2P ready · waiting for peer** — signaling is available, but no other participant is currently connected.
+- **Connected · N online** — at least one real peer/presence connection exists.
+- **Signaling unavailable** — no public signaling endpoint became reachable within the timeout.
+- **Offline · local editing** — the browser is offline; IndexedDB editing continues locally.
+
+This avoids treating the `y-webrtc` provider `status` event as proof that another peer is connected. That event only indicates that the provider is active and looking for peers.
 
 ## GitHub Pages deployment
 
@@ -39,8 +49,9 @@ Opening the site creates a room automatically. Use **Copy link** to invite anoth
 
 - Anyone who receives a room URL can join that room.
 - Documents are cached locally in each participant's browser through IndexedDB.
-- The public Yjs demo WebSocket endpoint provides live synchronization but should not be treated as durable remote storage.
-- Availability of the hosted demo depends on the public synchronization endpoint until a dedicated service is configured.
+- A new browser can receive the current document only while another participant holding that document is online.
+- Public signaling availability affects whether new peers can discover one another.
+- WebRTC connectivity may still be restricted by strict NATs, corporate firewalls, or browser privacy/network policies because this prototype does not provide a TURN relay.
 - This prototype loads pinned packages from `esm.sh`; a production deployment may vendor them locally.
 
 ## Development
